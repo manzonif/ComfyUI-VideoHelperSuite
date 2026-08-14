@@ -823,8 +823,10 @@ class BatchManager:
         self.unique_id = None
         self.has_closed_inputs = False
         self.total_frames = float('inf')
+        self.requeue = 0
     def reset(self):
         self.close_inputs()
+        self.requeue = 0
         for key in self.outputs:
             if getattr(self.outputs[key][-1], "gi_suspended", False):
                 try:
@@ -855,8 +857,8 @@ class BatchManager:
                 },
                 }
 
-    RETURN_TYPES = ("VHS_BatchManager",)
-    RETURN_NAMES = ("meta_batch",)
+    RETURN_TYPES = ("VHS_BatchManager", "INT")
+    RETURN_NAMES = ("meta_batch", "curr_batch")
     CATEGORY = "Video Helper Suite 🎥🅥🅗🅢"
     FUNCTION = "update_batch"
 
@@ -871,9 +873,10 @@ class BatchManager:
             self.unique_id = unique_id
         else:
             num_batches = (self.total_frames+self.frames_per_batch-1)//frames_per_batch
+            self.requeue = requeue
             print(f'Meta-Batch {requeue}/{num_batches}')
         #onExecuted seems to not be called unless some message is sent
-        return (self,)
+        return (self, self.requeue)
 
 
 class VideoInfo:
