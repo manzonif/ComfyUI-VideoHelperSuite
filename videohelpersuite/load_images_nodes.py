@@ -108,6 +108,24 @@ def load_images(directory: str, image_load_cap: int = 0, skip_first_images: int 
     if meta_batch is not None:
         gen = itertools.islice(gen, meta_batch.frames_per_batch)
     images = torch.from_numpy(np.fromiter(gen, np.dtype((np.float32, (height, width, 3 + has_alpha)))))
+
+    # Handle context frames for meta_batch processing
+    context_frames_prepended = 0
+    if meta_batch is not None and meta_batch.context_frames > 0:
+        ctx_count = meta_batch.context_frames
+        # Prepend context frames from previous batch (if available and not first batch)
+        if meta_batch.requeue > 0 and unique_id in meta_batch.context_cache:
+            prev_context = meta_batch.context_cache[unique_id]
+            images = torch.cat([prev_context, images], dim=0)
+            context_frames_prepended = len(prev_context)
+        # Cache last ctx_count frames from current batch for next iteration
+        if len(images) >= ctx_count:
+            meta_batch.context_cache[unique_id] = images[-ctx_count:].clone()
+        elif len(images) > 0:
+            meta_batch.context_cache[unique_id] = images.clone()
+        # Track for VideoCombine to know how many frames to skip
+        meta_batch.context_frames_used = context_frames_prepended
+
     if has_alpha:
         #tensors are not continuous. Rewrite will be required if this is an issue
         masks = images[:,:,:,3]

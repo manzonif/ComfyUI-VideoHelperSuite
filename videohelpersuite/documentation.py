@@ -322,11 +322,14 @@ descriptions = {
     image("https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite/assets/4284322/7cb3fb7e-59d8-4cb2-a09f-9c6698de8b1f"),
     "It functions by holding both the inputs and ouputs open between executions, and automatically requeue's the workflow until one of the inputs is unable to provide additional images.",
     "Because each sub execution only contains a subset of the total frames, each sub execution creates a hard window which temporal smoothing can not be applied across. This results in jumps in the output.",
+    "The context_frames setting allows each batch to include overlapping frames from the previous batch, which can help reduce visible jumps at batch boundaries when using temporal processing.",
     {'Outputs': {
          'meta_batch': 'Add all connected nodes to this Meta Batch',
+         'curr_batch': 'The current batch number (0-indexed)',
          },
      'Widgets': {
          'frames_per_batch': 'How many frames to process for each sub execution. If loading as image, each frame will use about 50MB of RAM (not VRAM), and this can safely be set in the 100-1000 range, depending on available memory. When loading and combining from latent space (no blue image noodles exist), this value can be much higher, around the 2,000 to 20,000 range',
+         'context_frames': 'Number of frames from the previous batch to include as context for each batch (except the first). These frames are included in the input but automatically removed from the output, allowing temporal smoothing across batch boundaries.',
          }
         }],
   "VHS_VideoInfo": ['Video Info 🎥🅥🅗🅢', short_desc('Splits information on a video into a numerous outputs'),

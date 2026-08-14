@@ -503,6 +503,12 @@ class VideoCombine:
                     "-s", f"{dimensions[0]}x{dimensions[1]}", "-r", str(frame_rate), "-i", "-"] \
                     + loop_args
 
+            # Skip context frames if any were prepended by LoadVideo for this batch
+            if meta_batch is not None and meta_batch.context_frames_used > 0:
+                frames_to_skip = meta_batch.context_frames_used
+                images = itertools.islice(images, frames_to_skip, None)
+                meta_batch.context_frames_used = 0  # Reset after consuming
+
             images = map(lambda x: x.tobytes(), images)
             env=os.environ.copy()
             if  "environment" in video_format:
@@ -816,14 +822,19 @@ class PruneOutputs:
         return ()
 
 class BatchManager:
-    def __init__(self, frames_per_batch=-1):
+    def __init__(self, frames_per_batch=-1, context_frames=0):
         self.frames_per_batch = frames_per_batch
+        self.context_frames = context_frames
         self.inputs = {}
         self.outputs = {}
         self.unique_id = None
         self.has_closed_inputs = False
         self.total_frames = float('inf')
         self.requeue = 0
+        # Cache to store context frames from previous batches for each LoadVideo node
+        self.context_cache = {}
+        # Tracks how many context frames were prepended to the current batch (for VideoCombine to skip)
+        self.context_frames_used = 0
     def reset(self):
         self.close_inputs()
         self.requeue = 0
@@ -833,7 +844,9 @@ class BatchManager:
                     self.outputs[key][-1].send(None)
                 except StopIteration:
                     pass
-        self.__init__(self.frames_per_batch)
+        self.context_cache.clear()
+        self.context_frames_used = 0
+        self.__init__(self.frames_per_batch, self.context_frames)
     def has_open_inputs(self):
         return len(self.inputs) > 0
     def close_inputs(self):
@@ -849,7 +862,8 @@ class BatchManager:
     def INPUT_TYPES(s):
         return {
                 "required": {
-                    "frames_per_batch": ("INT", {"default": 16, "min": 1, "max": BIGMAX, "step": 1})
+                    "frames_per_batch": ("INT", {"default": 16, "min": 1, "max": BIGMAX, "step": 1}),
+                    "context_frames": ("INT", {"default": 0, "min": 0, "max": BIGMAX, "step": 1})
                     },
                 "hidden": {
                     "prompt": "PROMPT",
@@ -862,7 +876,7 @@ class BatchManager:
     CATEGORY = "Video Helper Suite 🎥🅥🅗🅢"
     FUNCTION = "update_batch"
 
-    def update_batch(self, frames_per_batch, prompt=None, unique_id=None):
+    def update_batch(self, frames_per_batch, context_frames=0, prompt=None, unique_id=None):
         if unique_id is not None and prompt is not None:
             requeue = prompt[unique_id]['inputs'].get('requeue', 0)
         else:
@@ -870,6 +884,7 @@ class BatchManager:
         if requeue == 0:
             self.reset()
             self.frames_per_batch = frames_per_batch
+            self.context_frames = context_frames
             self.unique_id = unique_id
         else:
             num_batches = (self.total_frames+self.frames_per_batch-1)//frames_per_batch

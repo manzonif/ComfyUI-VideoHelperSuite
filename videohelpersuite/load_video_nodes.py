@@ -400,6 +400,23 @@ def load_video(meta_batch=None, unique_id=None, memory_limit_mb=None, vae=None,
     target_frame_time *= kwargs.get('select_every_nth', 1)
     #Setup lambda for lazy audio capture
     audio = lazy_get_audio(kwargs['video'], start_time, kwargs['frame_load_cap']*target_frame_time)
+    # Handle context frames for meta_batch processing
+    context_frames_prepended = 0
+    if meta_batch is not None and meta_batch.context_frames > 0:
+        ctx_count = meta_batch.context_frames
+        # Prepend context frames from previous batch (if available and not first batch)
+        if meta_batch.requeue > 0 and unique_id in meta_batch.context_cache:
+            prev_context = meta_batch.context_cache[unique_id]
+            images = torch.cat([prev_context, images], dim=0)
+            context_frames_prepended = len(prev_context)
+        # Cache last ctx_count frames from current batch for next iteration
+        if len(images) >= ctx_count:
+            meta_batch.context_cache[unique_id] = images[-ctx_count:].clone()
+        elif len(images) > 0:
+            meta_batch.context_cache[unique_id] = images.clone()
+        # Track for VideoCombine to know how many frames to skip
+        meta_batch.context_frames_used = context_frames_prepended
+
     #Adjust target_frame_time for select_every_nth
     video_info = {
         "source_fps": fps,
@@ -412,6 +429,7 @@ def load_video(meta_batch=None, unique_id=None, memory_limit_mb=None, vae=None,
         "loaded_duration": len(images) * target_frame_time,
         "loaded_width": new_width,
         "loaded_height": new_height,
+        "context_frames": context_frames_prepended,
     }
     if vae is None:
         return (images, len(images), audio, video_info)
