@@ -13,6 +13,7 @@ from pathlib import Path
 from string import Template
 import itertools
 import functools
+from collections import deque
 
 import folder_paths
 from .logger import logger
@@ -457,8 +458,20 @@ class VideoCombine:
                 dimensions = (-first_image.shape[1] % dim_alignment + first_image.shape[1],
                               -first_image.shape[0] % dim_alignment + first_image.shape[0])
                 logger.warn("Output images were not of valid resolution and have had padding applied")
+                content_offset = (padding[2], padding[0])
             else:
                 dimensions = (first_image.shape[1], first_image.shape[0])
+                content_offset = (0, 0)
+            # When "edited" context is enabled, remember the last frames of
+            # this combined output so the next batch can use them as context
+            edited_tail = None
+            if meta_batch is not None and meta_batch.edited and meta_batch.context_frames > 0:
+                edited_tail = deque(maxlen=meta_batch.context_frames)
+                def capture_tail(frame_iter, tail=edited_tail):
+                    for frame in frame_iter:
+                        tail.append(frame)
+                        yield frame
+                images = capture_tail(images)
             if pingpong:
                 if meta_batch is not None:
                     logger.error("pingpong is incompatible with batched output")
@@ -553,6 +566,12 @@ class VideoCombine:
             for image in images:
                 pbar.update(1)
                 output_process.send(image)
+            if edited_tail is not None and len(edited_tail) > 0:
+                # Store the tail of this batch's combined video for the next batch
+                # (crop any padding and alpha channel to the original image size)
+                top, left = content_offset
+                h, w = first_image.shape[:2]
+                meta_batch.edited_context = torch.stack(list(edited_tail))[:, top:top+h, left:left+w, :3].clone()
             if meta_batch is not None:
                 requeue_workflow((meta_batch.unique_id, not meta_batch.has_closed_inputs))
             if meta_batch is None or meta_batch.has_closed_inputs:
@@ -825,6 +844,9 @@ class BatchManager:
     def __init__(self, frames_per_batch=-1, context_frames=0):
         self.frames_per_batch = frames_per_batch
         self.context_frames = context_frames
+        # When True, context frames are taken from the tail of the previous
+        # batch's combined (edited) video instead of the original video
+        self.edited = False
         self.inputs = {}
         self.outputs = {}
         self.unique_id = None
@@ -835,6 +857,8 @@ class BatchManager:
         self.context_cache = {}
         # Tracks how many context frames were prepended to the current batch (for VideoCombine to skip)
         self.context_frames_used = 0
+        # Tail of the last combined video (set by VideoCombine), used as context when "edited" is enabled
+        self.edited_context = None
     def reset(self):
         self.close_inputs()
         self.requeue = 0
@@ -863,7 +887,8 @@ class BatchManager:
         return {
                 "required": {
                     "frames_per_batch": ("INT", {"default": 16, "min": 1, "max": BIGMAX, "step": 1}),
-                    "context_frames": ("INT", {"default": 0, "min": 0, "max": BIGMAX, "step": 1})
+                    "context_frames": ("INT", {"default": 0, "min": 0, "max": BIGMAX, "step": 1}),
+                    "edited": ("BOOLEAN", {"default": False})
                     },
                 "hidden": {
                     "prompt": "PROMPT",
@@ -876,7 +901,7 @@ class BatchManager:
     CATEGORY = "Video Helper Suite 🎥🅥🅗🅢"
     FUNCTION = "update_batch"
 
-    def update_batch(self, frames_per_batch, context_frames=0, prompt=None, unique_id=None):
+    def update_batch(self, frames_per_batch, context_frames=0, edited=False, prompt=None, unique_id=None):
         if unique_id is not None and prompt is not None:
             requeue = prompt[unique_id]['inputs'].get('requeue', 0)
         else:
@@ -885,6 +910,7 @@ class BatchManager:
             self.reset()
             self.frames_per_batch = frames_per_batch
             self.context_frames = context_frames
+            self.edited = edited
             self.unique_id = unique_id
         else:
             num_batches = (self.total_frames+self.frames_per_batch-1)//frames_per_batch

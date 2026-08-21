@@ -405,10 +405,25 @@ def load_video(meta_batch=None, unique_id=None, memory_limit_mb=None, vae=None,
     if meta_batch is not None and meta_batch.context_frames > 0:
         ctx_count = meta_batch.context_frames
         # Prepend context frames from previous batch (if available and not first batch)
-        if meta_batch.requeue > 0 and unique_id in meta_batch.context_cache:
-            prev_context = meta_batch.context_cache[unique_id]
-            images = torch.cat([prev_context, images], dim=0)
-            context_frames_prepended = len(prev_context)
+        if meta_batch.requeue > 0:
+            prev_context = None
+            if meta_batch.edited and meta_batch.edited_context is not None:
+                # "edited" mode: use the tail of the previous batch's combined
+                # (edited) video, stored by VideoCombine
+                prev_context = meta_batch.edited_context
+                if prev_context.dim() != images.dim():
+                    logger.warn("Edited context frames are not compatible with the current batch, using original context instead")
+                    prev_context = None
+            if prev_context is None:
+                # "original" mode: use the tail of the original video
+                prev_context = meta_batch.context_cache.get(unique_id)
+            if prev_context is not None:
+                prev_context = prev_context.to(images.dtype)
+                if prev_context.dim() == 3 and images.dim() == 3:
+                    #Align channel count (e.g. drop alpha from the context)
+                    prev_context = prev_context[..., :images.shape[-1]]
+                images = torch.cat([prev_context, images], dim=0)
+                context_frames_prepended = len(prev_context)
         # Cache last ctx_count frames from current batch for next iteration
         if len(images) >= ctx_count:
             meta_batch.context_cache[unique_id] = images[-ctx_count:].clone()
